@@ -1,19 +1,14 @@
+AzureARC-pipelines.yml              # ADO pipeline definition (Arc onboarding only)
+
 Linux_VM/
 ├─ playbook/
-│  ├─ playbook.yml          # entry point playbook (calls the role)
-│  └─ inventory.yml         # inventory file for target hosts
+│  ├─ playbook.yml                  # Entry playbook (calls Arc role)
+│  └─ inventory.yml                 # Hosts inventory
 │
 └─ roles/
-   └─ lin_defender_agent/
+   └─ arc_onboard/
       ├─ tasks/
-      │  └─ main.yml        # all tasks (Arc connect, verify, etc.)
+      │  └─ main.yml                # Arc connect + verify tasks
       │
-      ├─ defaults/
-      │  └─ main.yml        # safe, overridable vars (tenant, sub, RG, tags…)
-      │
-      ├─ vars/              # (optional) high-precedence vars — avoid if possible
-      │  └─ main.yml
-      │
-      ├─ files/             # (optional) static files to copy
-      ├─ templates/         # (optional) Jinja2 templates
-      └─ meta/              # (optional) role metadata
+      └─ defaults/
+         └─ main.yml                # Non-secret Arc vars (tenant, sub, RG, etc.)

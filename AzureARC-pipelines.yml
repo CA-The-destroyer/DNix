@@ -1,0 +1,19 @@
+trigger: none
+
+pool:
+  name: ansible-agents
+
+steps:
+- checkout: self
+
+- bash: |
+    set -euo pipefail
+    [[ -n "${defender_sp_secret:-}" ]] || { echo "ERROR: defender_sp_secret missing"; exit 1; }
+
+    ansible-playbook \
+      -i ./Linux_VM/playbook/inventory.yml \
+      ./Linux_VM/playbook/playbook.yml \
+      -v
+  displayName: "Onboard RHEL VM to Azure Arc"
+  env:
+    defender_sp_secret: $(defender_sp_secret)

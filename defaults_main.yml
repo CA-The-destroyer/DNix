@@ -1,0 +1,15 @@
+---
+# Linux_VM/roles/arc_onboard/defaults/main.yml
+arc_sp_app_id: "00000000-0000-0000-0000-000000000000"
+arc_tenant_id: "00000000-0000-0000-0000-000000000000"
+arc_subscription_id: "00000000-0000-0000-0000-000000000000"
+arc_resource_group: "rg-arc-onboarding"
+arc_location: "centralus"
+
+arc_resource_name_prefix: ""
+arc_resource_name_suffix: ""
+arc_cloud: ""              # leave empty for public Azure
+arc_tags: {}
+arc_force_reconnect: false
+arc_verify_retries: 5
+arc_verify_delay: 5

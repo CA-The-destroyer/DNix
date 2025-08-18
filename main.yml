@@ -1,0 +1,60 @@
+# Linux_VM/roles/arc_onboard/tasks/main.yml
+---
+- name: Arc | Check azcmagent exists
+  stat:
+    path: /opt/azcmagent/bin/azcmagent
+  register: arc_bin
+
+- name: Arc | Fail if missing
+  fail:
+    msg: "azcmagent not installed. Ensure agent is deployed before connect."
+  when: not arc_bin.stat.exists
+
+- name: Arc | Pre-status
+  command: /opt/azcmagent/bin/azcmagent show
+  register: arc_show
+  changed_when: false
+  failed_when: false
+  become: true
+
+- name: Arc | Compute resource name
+  set_fact:
+    arc_name: >-
+      {{ (arc_resource_name_prefix ~ inventory_hostname ~ arc_resource_name_suffix)
+         | regex_replace('^\\s+|\\s+$','') | regex_replace('\\s+','-') }}
+
+- name: Arc | Already connected?
+  set_fact:
+    arc_connected: "{{ arc_show.stdout is search('Connected\\s*:\\s*yes', ignorecase=True) }}"
+
+- name: Arc | Disconnect first (if forced)
+  command: /opt/azcmagent/bin/azcmagent disconnect --force
+  become: true
+  when: arc_force_reconnect | bool
+
+- name: Arc | Connect
+  block:
+    - name: Connect to Azure Arc
+      command: >-
+        /opt/azcmagent/bin/azcmagent connect
+        --service-principal-id "{{ arc_sp_app_id }}"
+        --service-principal-secret "{{ defender_sp_secret }}"
+        --tenant-id "{{ arc_tenant_id }}"
+        --subscription-id "{{ arc_subscription_id }}"
+        --resource-group "{{ arc_resource_group }}"
+        --location "{{ arc_location }}"
+        --resource-name "{{ arc_name }}"
+      register: arc_connect
+      changed_when: arc_connect.rc == 0
+      no_log: true
+      become: true
+
+    - name: Verify Arc connection
+      command: /opt/azcmagent/bin/azcmagent show
+      register: arc_verify
+      changed_when: false
+      until: arc_verify.stdout is search('Connected\\s*:\\s*yes', ignorecase=True)
+      retries: "{{ arc_verify_retries }}"
+      delay: "{{ arc_verify_delay }}"
+      become: true
+  when: not arc_connected

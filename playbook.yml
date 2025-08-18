@@ -1,0 +1,11 @@
+---
+# Linux_VM/playbook/playbook.yml
+- name: Onboard RHEL VM to Azure Arc
+  hosts: all
+  become: true
+
+  vars:
+    defender_sp_secret: "{{ lookup('env','defender_sp_secret') }}"
+
+  roles:
+    - arc_onboard

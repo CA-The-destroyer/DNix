@@ -149,12 +149,11 @@
 
 - name: Arc | Diagnostic summary
   debug:
-    msg:
-      - "azcmagent version: {{ (arc_version.stdout | default('unknown')) | trim }}"
-      - "Final status (text): {{ (arc_status_post.stdout | default('n/a')) | trim }}"
-      - "Resource name used: {{ arc_name }}"
-      - "Tags effective: {{ arc_tags_effective | default({}) }}"
-      - |
-        Logs tail:
-        {{ (arc_logs_tail.stdout | default('n/a')) }}
+    msg: |
+      azcmagent version: {{ (arc_version.stdout | default('unknown')) | trim }}
+      Final status (text): {{ (arc_status_post.stdout | default('n/a')) | trim }}
+      Resource name used: {{ arc_name }}
+      Tags effective: {{ arc_tags_effective | default({}) }}
+      Logs tail:
+      {{ (arc_logs_tail.stdout | default('n/a')) }}
   when: arc_verify_json is failed

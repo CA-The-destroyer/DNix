@@ -1,17 +1,58 @@
 ---
 # roles/arc_onboard/tasks/main.yml
 
-# --- Sanity & pre-status ------------------------------------------------------
+# --- Install azcmagent if missing --------------------------------------------
 
 - name: Arc | Check azcmagent binary exists
   stat:
     path: /opt/azcmagent/bin/azcmagent
   register: azcmagent_bin
 
-- name: Arc | Fail if azcmagent missing
-  fail:
-    msg: "azcmagent not found at /opt/azcmagent/bin/azcmagent. Install the Azure Arc agent first."
+- name: Arc | Add Microsoft repo (RHEL family)
+  yum:
+    name: "https://packages.microsoft.com/config/rhel/{{ ansible_distribution_major_version }}/packages-microsoft-prod.rpm"
+    state: present
+  when:
+    - not azcmagent_bin.stat.exists
+    - ansible_os_family == "RedHat"
+  become: true
+
+- name: Arc | Add Microsoft repo (Debian/Ubuntu)
+  apt:
+    deb: "https://packages.microsoft.com/config/ubuntu/{{ ansible_distribution_release }}/packages-microsoft-prod.deb"
+    state: present
+  when:
+    - not azcmagent_bin.stat.exists
+    - ansible_os_family == "Debian"
+  become: true
+
+- name: Arc | Refresh apt cache (Debian/Ubuntu)
+  apt:
+    update_cache: true
+  when:
+    - not azcmagent_bin.stat.exists
+    - ansible_os_family == "Debian"
+  become: true
+
+- name: Arc | Install azcmagent package
+  package:
+    name: azcmagent
+    state: present
   when: not azcmagent_bin.stat.exists
+  become: true
+
+# Re-check after attempted install
+- name: Arc | Verify azcmagent present
+  stat:
+    path: /opt/azcmagent/bin/azcmagent
+  register: azcmagent_bin_after
+
+- name: Arc | Fail if azcmagent still missing
+  fail:
+    msg: "azcmagent not found at /opt/azcmagent/bin/azcmagent after install attempt."
+  when: not azcmagent_bin_after.stat.exists
+
+# --- Pre-status ---------------------------------------------------------------
 
 - name: Arc | Show version
   command: /opt/azcmagent/bin/azcmagent version
@@ -45,6 +86,7 @@
 
 # --- Resource name (facts-driven; no external DNS trust) ---------------------
 
+# Prefer short hostname from facts; then FQDN; last resort = inventory IP
 - name: Arc | Pick base name from facts
   set_fact:
     _raw_name: >-
@@ -56,6 +98,8 @@
       {{ inventory_hostname }}
       {%- endif -%}
 
+# Normalize to an Azure-legal resource name
+# (lowercase, dots->dashes, only [a-z0-9-], collapse repeats, trim ends)
 - name: Arc | Normalize to legal Azure resource name
   set_fact:
     arc_name: >-

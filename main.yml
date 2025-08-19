@@ -45,6 +45,7 @@
 
 # --- Resource name (facts-driven; no external DNS trust) ---------------------
 
+# Prefer short hostname from facts; then FQDN; last resort = inventory IP
 - name: Arc | Pick base name from facts
   set_fact:
     _raw_name: >-
@@ -56,22 +57,25 @@
       {{ inventory_hostname }}
       {%- endif -%}
 
+# Normalize to an Azure-legal resource name
+# (lowercase, dots->dashes, only [a-z0-9-], collapse repeats, trim ends)
 - name: Arc | Normalize to legal Azure resource name
   set_fact:
     arc_name: >-
       {{ (_raw_name | lower)
-         | replace('.', '-')                    # dots → dashes
-         | regex_replace('[^a-z0-9-]', '-')     # only [a-z0-9-]
-         | regex_replace('-{2,}', '-')          # collapse --
-         | regex_replace('(^-|-$)', '')         # trim hyphens
+         | replace('.', '-')
+         | regex_replace('[^a-z0-9-]', '-')
+         | regex_replace('-{2,}', '-')
+         | regex_replace('(^-|-$)', '')
       }}
 
 - name: Arc | Using resource name
   debug:
     msg: "Arc resource name = {{ arc_name }}"
 
-# --- Tags: normalize input, then merge audit info -----------------------------
+# --- Tags: normalize input (optional) then merge audit info -------------------
 
+# Accept arc_tags as dict OR list of "k=v"; otherwise empty
 - name: Arc | Normalize incoming tags to a mapping
   set_fact:
     _arc_tags_base: >-

@@ -45,7 +45,6 @@
 
 # --- Resource name (facts-driven; no external DNS trust) ---------------------
 
-# Prefer short hostname from facts; then FQDN; last resort = inventory IP
 - name: Arc | Pick base name from facts
   set_fact:
     _raw_name: >-
@@ -57,8 +56,6 @@
       {{ inventory_hostname }}
       {%- endif -%}
 
-# Normalize to an Azure-legal resource name
-# (lowercase, dots->dashes, only [a-z0-9-], collapse repeats, trim ends)
 - name: Arc | Normalize to legal Azure resource name
   set_fact:
     arc_name: >-
@@ -75,7 +72,6 @@
 
 # --- Tags: normalize input (optional) then merge audit info -------------------
 
-# Accept arc_tags as dict OR list of "k=v"; otherwise empty
 - name: Arc | Normalize incoming tags to a mapping
   set_fact:
     _arc_tags_base: >-
@@ -158,5 +154,7 @@
       - "Final status (text): {{ (arc_status_post.stdout | default('n/a')) | trim }}"
       - "Resource name used: {{ arc_name }}"
       - "Tags effective: {{ arc_tags_effective | default({}) }}"
-      - "Logs tail:\n{{ (arc_logs_tail.stdout | default('n/a')) }}"
+      - |
+        Logs tail:
+        {{ (arc_logs_tail.stdout | default('n/a')) }}
   when: arc_verify_json is failed

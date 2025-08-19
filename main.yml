@@ -1,77 +1,77 @@
 ---
 # roles/arc_onboard/tasks/main.yml
 
-- name: Arc | Check azcmagent exists
+# --- Sanity & pre-status ------------------------------------------------------
+
+- name: Arc | Check azcmagent binary exists
   stat:
     path: /opt/azcmagent/bin/azcmagent
   register: arc_agent
   failed_when: not arc_agent.stat.exists
 
-- name: Arc | Pre-status
+- name: Arc | Show version
+  command: /opt/azcmagent/bin/azcmagent version
+  register: arc_version
+  changed_when: false
+
+- name: Arc | Current status (pre)
   command: /opt/azcmagent/bin/azcmagent show
-  register: arc_status
+  register: arc_status_pre
   changed_when: false
   failed_when: false
 
-- name: Arc | Already connected?
+- name: Arc | Determine if already connected
   set_fact:
-    arc_connected: "{{ 'Connected' in (arc_status.stdout | default('')) }}"
+    arc_connected: "{{ arc_status_pre.stdout is search('Connected\\s*:\\s*yes', ignorecase=True) }}"
 
-- name: Arc | Disconnect first (if forced)
+# Optional: controlled rebind path; set arc_force_reconnect: true to exercise
+- name: Arc | Disconnect first (forced)
   command: /opt/azcmagent/bin/azcmagent disconnect --force
-  when: arc_connected | bool and arc_force_reconnect | default(false) | bool
+  register: arc_disc
+  changed_when: arc_disc.rc == 0
+  failed_when: false
   become: true
+  when: arc_force_reconnect | default(false) | bool
 
-# ---------------------------------------------------
-# Hostname / Resource name resolution
-# ---------------------------------------------------
-- name: Arc | Try hostnamectl --static
-  command: hostnamectl --static
-  register: _hnctl
-  changed_when: false
-  failed_when: false
+# --- Resource name derivation (facts-driven, no external DNS) -----------------
 
-- name: Arc | Try getent hosts for inventory IP
-  command: getent hosts {{ inventory_hostname }}
-  register: _getent
-  changed_when: false
-  failed_when: false
-
-- name: Arc | Pick raw name source
+# Prefer short hostname from facts; then FQDN; last resort = inventory IP
+- name: Arc | Pick base name from facts
   set_fact:
     _raw_name: >-
-      {%- if arc_resource_name_override is defined and arc_resource_name_override|length > 0 -%}
-      {{ arc_resource_name_override }}
-      {%- elif (_hnctl.rc|default(1)) == 0 and _hnctl.stdout|trim and _hnctl.stdout|trim != 'localhost' -%}
-      {{ _hnctl.stdout|trim }}
+      {%- if ansible_hostname is defined and ansible_hostname and ansible_hostname != 'localhost' -%}
+      {{ ansible_hostname }}
       {%- elif ansible_fqdn is defined and ansible_fqdn and ansible_fqdn != 'localhost' -%}
       {{ ansible_fqdn }}
-      {%- elif ansible_hostname is defined and ansible_hostname and ansible_hostname != 'localhost' -%}
-      {{ ansible_hostname }}
-      {%- elif (_getent.rc|default(1)) == 0 -%}
-      {{ (_getent.stdout.split()|last) }}
       {%- else -%}
       {{ inventory_hostname }}
       {%- endif -%}
 
-- name: Arc | Normalize to short host (strip domain)
-  set_fact:
-    _short_name: "{{ (_raw_name.split('.') | first) | lower }}"
-
-- name: Arc | Compute legal Arc resource name
+- name: Arc | Normalize to legal Azure resource name
   set_fact:
     arc_name: >-
-      {{ (_short_name
-          | replace('.', '-')
-          | regex_replace('[^a-z0-9-]', '-')
-          | regex_replace('-{2,}', '-')
-          | regex_replace('(^-|-$)', '')
-         ) | lower }}
-    arc_tags_effective: "{{ (arc_tags | default({})) | combine({'original_ip': inventory_hostname, 'resolved_name': _short_name}) }}"
+      {{ (_raw_name | lower)
+         | replace('.', '-')                    # dots → dashes
+         | regex_replace('[^a-z0-9-]', '-')     # only [a-z0-9-]
+         | regex_replace('-{2,}', '-')          # collapse --
+         | regex_replace('(^-|-$)', '')         # trim hyphens
+      }}
 
-# ---------------------------------------------------
-# Connect
-# ---------------------------------------------------
+- name: Arc | Using resource name (info)
+  debug:
+    msg: "Arc resource name resolved to: {{ arc_name }}"
+
+# Compose tags (optional, safe): keep source info for auditing
+- name: Arc | Effective tags (merge)
+  set_fact:
+    arc_tags_effective: "{{ (arc_tags | default({})) | combine({
+      'ansible_hostname': (ansible_hostname | default('n/a')),
+      'ansible_fqdn': (ansible_fqdn | default('n/a')),
+      'original_ip': inventory_hostname
+    }) }}"
+
+# --- Connect (skip if already connected and not forcing) ----------------------
+
 - name: Arc | Connect to Azure Arc
   command: >-
     /opt/azcmagent/bin/azcmagent connect
@@ -87,16 +87,49 @@
   changed_when: arc_connect.rc == 0
   no_log: true
   become: true
-  when: not arc_connected
+  when: not arc_connected or (arc_force_reconnect | default(false) | bool)
 
-# ---------------------------------------------------
-# Verify
-# ---------------------------------------------------
-- name: Arc | Verify Arc connection
+# --- Verify (eventual consistency tolerant) -----------------------------------
+
+- name: Arc | Verify connection (JSON)
+  command: /opt/azcmagent/bin/azcmagent show --json
+  register: arc_verify_json
+  changed_when: false
+  failed_when: false
+  become: true
+  until: >
+    (arc_verify_json.stdout is search('\"Connected\"\\s*:\\s*true', ignorecase=True)) or
+    (arc_verify_json.stdout is search('\"status\"\\s*:\\s*\"Connected\"', ignorecase=True)) or
+    (arc_verify_json.stdout is search('Connected\\s*:\\s*yes', ignorecase=True))
+  retries: "{{ (arc_verify_retries | default(10)) | int }}"
+  delay: "{{ (arc_verify_delay | default(6)) | int }}"
+
+# --- Diagnostics on failure (no secrets) --------------------------------------
+
+- name: Arc | Show status (text) for diagnostics
   command: /opt/azcmagent/bin/azcmagent show
-  register: arc_verify
-  retries: 5
-  delay: 5
-  until: "'Connected' in arc_verify.stdout"
+  register: arc_status_post
   changed_when: false
   become: true
+  when: arc_verify_json is failed
+
+- name: Arc | Tail agent logs (last 120 lines)
+  shell: |
+    set -euo pipefail
+    for f in /var/opt/azcmagent/log/azcmagent.log /var/opt/azcmagent/log/himds.log; do
+      echo "----- $f (tail -n 120) -----"
+      test -f "$f" && tail -n 120 "$f" || echo "missing: $f"
+    done
+  register: arc_logs_tail
+  changed_when: false
+  become: true
+  when: arc_verify_json is failed
+
+- name: Arc | Diagnostic summary
+  debug:
+    msg:
+      - "azcmagent version: {{ (arc_version.stdout | default('unknown')) | trim }}"
+      - "Final status (text): {{ (arc_status_post.stdout | default('n/a')) | trim }}"
+      - "Resource name used: {{ arc_name }}"
+      - "Logs tail:\n{{ (arc_logs_tail.stdout | default('n/a')) }}"
+  when: arc_verify_json is failed

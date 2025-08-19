@@ -13,18 +13,20 @@
   command: /opt/azcmagent/bin/azcmagent version
   register: arc_version
   changed_when: false
+  become: true
 
 - name: Arc | Current status (pre)
   command: /opt/azcmagent/bin/azcmagent show
   register: arc_status_pre
   changed_when: false
   failed_when: false
+  become: true
 
 - name: Arc | Determine if already connected
   set_fact:
     arc_connected: "{{ arc_status_pre.stdout is search('Connected\\s*:\\s*yes', ignorecase=True) }}"
 
-# Optional: controlled rebind path; set arc_force_reconnect: true to exercise
+# Optional: controlled rebind; set arc_force_reconnect: true to force a fresh connect
 - name: Arc | Disconnect first (forced)
   command: /opt/azcmagent/bin/azcmagent disconnect --force
   register: arc_disc
@@ -33,7 +35,7 @@
   become: true
   when: arc_force_reconnect | default(false) | bool
 
-# --- Resource name derivation (facts-driven, no external DNS) -----------------
+# --- Resource name derivation (facts-driven, no external DNS trust) -----------
 
 # Prefer short hostname from facts; then FQDN; last resort = inventory IP
 - name: Arc | Pick base name from facts
@@ -61,13 +63,26 @@
   debug:
     msg: "Arc resource name resolved to: {{ arc_name }}"
 
-# Compose tags (optional, safe): keep source info for auditing
-- name: Arc | Effective tags (merge)
+# --- Normalize tags then merge audit info -------------------------------------
+
+# Accept arc_tags as dict OR list of "k=v"; otherwise empty
+- name: Arc | Normalize incoming tags to a mapping
   set_fact:
-    arc_tags_effective: "{{ (arc_tags | default({})) | combine({
-      'ansible_hostname': (ansible_hostname | default('n/a')),
-      'ansible_fqdn': (ansible_fqdn | default('n/a')),
-      'original_ip': inventory_hostname
+    _arc_tags_base: >-
+      {% if arc_tags is mapping -%}
+      {{ arc_tags }}
+      {%- elif arc_tags is iterable and (arc_tags is not string) -%}
+      {{ dict( (arc_tags | map('split','=', 1) | list) ) }}
+      {%- else -%}
+      {}
+      {%- endif %}
+
+- name: Arc | Effective tags (merge normalized + audit)
+  set_fact:
+    arc_tags_effective: "{{ _arc_tags_base | combine({
+      'ansible_hostname': ansible_hostname | default('n/a', true),
+      'ansible_fqdn':     ansible_fqdn     | default('n/a', true),
+      'original_ip':      inventory_hostname
     }) }}"
 
 # --- Connect (skip if already connected and not forcing) ----------------------
@@ -131,5 +146,6 @@
       - "azcmagent version: {{ (arc_version.stdout | default('unknown')) | trim }}"
       - "Final status (text): {{ (arc_status_post.stdout | default('n/a')) | trim }}"
       - "Resource name used: {{ arc_name }}"
+      - "Tags effective: {{ arc_tags_effective | default({}) }}"
       - "Logs tail:\n{{ (arc_logs_tail.stdout | default('n/a')) }}"
   when: arc_verify_json is failed

@@ -1,60 +1,102 @@
-# Linux_VM/roles/arc_onboard/tasks/main.yml
 ---
+# roles/arc_onboard/tasks/main.yml
+
 - name: Arc | Check azcmagent exists
   stat:
     path: /opt/azcmagent/bin/azcmagent
-  register: arc_bin
-
-- name: Arc | Fail if missing
-  fail:
-    msg: "azcmagent not installed. Ensure agent is deployed before connect."
-  when: not arc_bin.stat.exists
+  register: arc_agent
+  failed_when: not arc_agent.stat.exists
 
 - name: Arc | Pre-status
   command: /opt/azcmagent/bin/azcmagent show
-  register: arc_show
+  register: arc_status
   changed_when: false
   failed_when: false
-  become: true
-
-- name: Arc | Compute resource name
-  set_fact:
-    arc_name: >-
-      {{ (arc_resource_name_prefix ~ inventory_hostname ~ arc_resource_name_suffix)
-         | regex_replace('^\\s+|\\s+$','') | regex_replace('\\s+','-') }}
 
 - name: Arc | Already connected?
   set_fact:
-    arc_connected: "{{ arc_show.stdout is search('Connected\\s*:\\s*yes', ignorecase=True) }}"
+    arc_connected: "{{ 'Connected' in (arc_status.stdout | default('')) }}"
 
 - name: Arc | Disconnect first (if forced)
   command: /opt/azcmagent/bin/azcmagent disconnect --force
+  when: arc_connected | bool and arc_force_reconnect | default(false) | bool
   become: true
-  when: arc_force_reconnect | bool
 
-- name: Arc | Connect
-  block:
-    - name: Connect to Azure Arc
-      command: >-
-        /opt/azcmagent/bin/azcmagent connect
-        --service-principal-id "{{ arc_sp_app_id }}"
-        --service-principal-secret "{{ defender_sp_secret }}"
-        --tenant-id "{{ arc_tenant_id }}"
-        --subscription-id "{{ arc_subscription_id }}"
-        --resource-group "{{ arc_resource_group }}"
-        --location "{{ arc_location }}"
-        --resource-name "{{ arc_name }}"
-      register: arc_connect
-      changed_when: arc_connect.rc == 0
-      no_log: true
-      become: true
+# ---------------------------------------------------
+# Hostname / Resource name resolution
+# ---------------------------------------------------
+- name: Arc | Try hostnamectl --static
+  command: hostnamectl --static
+  register: _hnctl
+  changed_when: false
+  failed_when: false
 
-    - name: Verify Arc connection
-      command: /opt/azcmagent/bin/azcmagent show
-      register: arc_verify
-      changed_when: false
-      until: arc_verify.stdout is search('Connected\\s*:\\s*yes', ignorecase=True)
-      retries: "{{ arc_verify_retries }}"
-      delay: "{{ arc_verify_delay }}"
-      become: true
+- name: Arc | Try getent hosts for inventory IP
+  command: getent hosts {{ inventory_hostname }}
+  register: _getent
+  changed_when: false
+  failed_when: false
+
+- name: Arc | Pick raw name source
+  set_fact:
+    _raw_name: >-
+      {%- if arc_resource_name_override is defined and arc_resource_name_override|length > 0 -%}
+      {{ arc_resource_name_override }}
+      {%- elif (_hnctl.rc|default(1)) == 0 and _hnctl.stdout|trim and _hnctl.stdout|trim != 'localhost' -%}
+      {{ _hnctl.stdout|trim }}
+      {%- elif ansible_fqdn is defined and ansible_fqdn and ansible_fqdn != 'localhost' -%}
+      {{ ansible_fqdn }}
+      {%- elif ansible_hostname is defined and ansible_hostname and ansible_hostname != 'localhost' -%}
+      {{ ansible_hostname }}
+      {%- elif (_getent.rc|default(1)) == 0 -%}
+      {{ (_getent.stdout.split()|last) }}
+      {%- else -%}
+      {{ inventory_hostname }}
+      {%- endif -%}
+
+- name: Arc | Normalize to short host (strip domain)
+  set_fact:
+    _short_name: "{{ (_raw_name.split('.') | first) | lower }}"
+
+- name: Arc | Compute legal Arc resource name
+  set_fact:
+    arc_name: >-
+      {{ (_short_name
+          | replace('.', '-')
+          | regex_replace('[^a-z0-9-]', '-')
+          | regex_replace('-{2,}', '-')
+          | regex_replace('(^-|-$)', '')
+         ) | lower }}
+    arc_tags_effective: "{{ (arc_tags | default({})) | combine({'original_ip': inventory_hostname, 'resolved_name': _short_name}) }}"
+
+# ---------------------------------------------------
+# Connect
+# ---------------------------------------------------
+- name: Arc | Connect to Azure Arc
+  command: >-
+    /opt/azcmagent/bin/azcmagent connect
+    --service-principal-id "{{ arc_sp_app_id }}"
+    --service-principal-secret "{{ defender_sp_secret }}"
+    --tenant-id "{{ arc_tenant_id }}"
+    --subscription-id "{{ arc_subscription_id }}"
+    --resource-group "{{ arc_resource_group }}"
+    --location "{{ arc_location }}"
+    --resource-name "{{ arc_name }}"
+    {% if arc_tags_effective %}--tags "{{ arc_tags_effective | dict2items | map('join','=') | join(' ') }}"{% endif %}
+  register: arc_connect
+  changed_when: arc_connect.rc == 0
+  no_log: true
+  become: true
   when: not arc_connected
+
+# ---------------------------------------------------
+# Verify
+# ---------------------------------------------------
+- name: Arc | Verify Arc connection
+  command: /opt/azcmagent/bin/azcmagent show
+  register: arc_verify
+  retries: 5
+  delay: 5
+  until: "'Connected' in arc_verify.stdout"
+  changed_when: false
+  become: true

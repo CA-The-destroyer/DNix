@@ -6,8 +6,12 @@
 - name: Arc | Check azcmagent binary exists
   stat:
     path: /opt/azcmagent/bin/azcmagent
-  register: arc_agent
-  failed_when: not arc_agent.stat.exists
+  register: azcmagent_bin
+
+- name: Arc | Fail if azcmagent missing
+  fail:
+    msg: "azcmagent not found at /opt/azcmagent/bin/azcmagent. Install the Azure Arc agent first."
+  when: not azcmagent_bin.stat.exists
 
 - name: Arc | Show version
   command: /opt/azcmagent/bin/azcmagent version
@@ -24,9 +28,13 @@
 
 - name: Arc | Determine if already connected
   set_fact:
-    arc_connected: "{{ arc_status_pre.stdout is search('Connected\\s*:\\s*yes', ignorecase=True) }}"
+    arc_connected: >-
+      {{
+        (arc_status_pre.stdout is search('Connected\\s*:\\s*yes', ignorecase=True)) or
+        (arc_status_pre.stdout is search('\"status\"\\s*:\\s*\"Connected\"', ignorecase=True))
+      }}
 
-# Optional: controlled rebind; set arc_force_reconnect: true to force a fresh connect
+# Optional: force a clean rebind when arc_force_reconnect: true
 - name: Arc | Disconnect first (forced)
   command: /opt/azcmagent/bin/azcmagent disconnect --force
   register: arc_disc
@@ -35,9 +43,8 @@
   become: true
   when: arc_force_reconnect | default(false) | bool
 
-# --- Resource name derivation (facts-driven, no external DNS trust) -----------
+# --- Resource name (facts-driven; no external DNS trust) ---------------------
 
-# Prefer short hostname from facts; then FQDN; last resort = inventory IP
 - name: Arc | Pick base name from facts
   set_fact:
     _raw_name: >-
@@ -59,13 +66,12 @@
          | regex_replace('(^-|-$)', '')         # trim hyphens
       }}
 
-- name: Arc | Using resource name (info)
+- name: Arc | Using resource name
   debug:
-    msg: "Arc resource name resolved to: {{ arc_name }}"
+    msg: "Arc resource name = {{ arc_name }}"
 
-# --- Normalize tags then merge audit info -------------------------------------
+# --- Tags: normalize input, then merge audit info -----------------------------
 
-# Accept arc_tags as dict OR list of "k=v"; otherwise empty
 - name: Arc | Normalize incoming tags to a mapping
   set_fact:
     _arc_tags_base: >-
@@ -79,13 +85,14 @@
 
 - name: Arc | Effective tags (merge normalized + audit)
   set_fact:
-    arc_tags_effective: "{{ _arc_tags_base | combine({
-      'ansible_hostname': ansible_hostname | default('n/a', true),
-      'ansible_fqdn':     ansible_fqdn     | default('n/a', true),
-      'original_ip':      inventory_hostname
-    }) }}"
+    arc_tags_effective: >-
+      {{ _arc_tags_base | combine({
+          'ansible_hostname': (ansible_hostname | default('n/a', true)),
+          'ansible_fqdn':     (ansible_fqdn     | default('n/a', true)),
+          'original_ip':      inventory_hostname
+      }) }}
 
-# --- Connect (skip if already connected and not forcing) ----------------------
+# --- Connect (skip if already connected unless forced) -----------------------
 
 - name: Arc | Connect to Azure Arc
   command: >-
@@ -121,7 +128,7 @@
 
 # --- Diagnostics on failure (no secrets) --------------------------------------
 
-- name: Arc | Show status (text) for diagnostics
+- name: Arc | Status (text) after connect
   command: /opt/azcmagent/bin/azcmagent show
   register: arc_status_post
   changed_when: false

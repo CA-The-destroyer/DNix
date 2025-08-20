@@ -1,0 +1,18 @@
+Resources
+| where type == "microsoft.compute/virtualmachines"
+| where name contains "PATTERN"   // replace PATTERN with part of the hostname
+| project vmId = id, vmName = name, resourceGroup, location
+| join kind=leftouter (
+    Resources
+    | where type == "microsoft.network/networkinterfaces"
+    | mv-expand ipconfig = properties.ipConfigurations
+    | project nicId = id, vmId = tostring(properties.virtualMachine.id), 
+              privateIp = tostring(ipconfig.properties.privateIPAddress), 
+              publicIpId = tostring(ipconfig.properties.publicIPAddress.id)
+) on vmId
+| join kind=leftouter (
+    Resources
+    | where type == "microsoft.network/publicipaddresses"
+    | project publicIpId = id, publicIp = properties.ipAddress
+) on publicIpId
+| project vmName, resourceGroup, location, privateIp, publicIp

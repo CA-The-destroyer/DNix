@@ -1,12 +1,20 @@
 Resources
-| where type =~ "microsoft.compute/virtualmachines"
-| where name has "yourpattern"   // replace with your hostname pattern
-| extend nics = properties.networkProfile.networkInterfaces[0].id
+| where type =~ 'microsoft.compute/virtualmachines'
+| where name has 'yourpattern'                      // ← change this to your pattern
+| project vmName = name, niList = properties.networkProfile.networkInterfaces
+| mv-expand ni = niList                             // expand NIC array
+| extend nicId = tostring(ni.id)
+       , isPrimaryNic = iif(isnull(ni.properties.primary) or ni.properties.primary == true, true, false)
+| where isPrimaryNic                                // keep the primary NIC (or all if flag missing)
 | join kind=leftouter (
     Resources
-    | where type =~ "microsoft.network/networkinterfaces"
-    | mv-expand ipconfig = properties.ipConfigurations
-    | extend privateIp = tostring(ipconfig.properties.privateIPAddress)
-    | project nicId = id, privateIp
-) on $left.nics == $right.nicId
-| project HostWithColon = strcat(name, ":"), Blank="", PrivateIPWithColon = strcat(privateIp, ":")
+    | where type =~ 'microsoft.network/networkinterfaces'
+    | project nicId = id, ipConfigs = properties.ipConfigurations
+    | mv-expand ipcfg = ipConfigs                   // expand IP configs
+    | extend privateIp = tostring(ipcfg.properties.privateIPAddress)
+           , isPrimaryIp = iif(isnull(ipcfg.properties.primary) or ipcfg.properties.primary == true, true, false)
+    | where isPrimaryIp and isnotempty(privateIp)   // keep primary IP (or only IP if flag missing)
+    | project nicId, privateIp
+) on nicId
+| project HostnameWithColon = strcat(vmName, ':'), Blank = '', PrivateIPWithColon = strcat(privateIp, ':')
+| order by HostnameWithColon asc

@@ -36,6 +36,16 @@ Additional notes
 
 * There’s a global toggle “Allow pipeline triggers to run”. If that’s disabled, schedules won’t fire.
 
+config-wise:
+
+* Default branch set correctly.
+
+* Pipeline settings allow schedules.
+
+* Service connections have read rights (if external repo).
+
+* Schedule appears under Triggers tab when parsed.
+
 * Also, if the repo is GitHub, the ADO service connection needs rights to read branches.
 
 Timezone:

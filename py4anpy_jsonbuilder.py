@@ -55,7 +55,7 @@ REQUIRED_FOR_MDE = [
     ("authType", "AuthType"),
     ("azurelocation", "Location"),
     ("correlationId", "CorrelationId"),
-    # "cloud" is optional but good to have; cloud_propagated is optional
+    # "cloud" and cloud-propagated block are optional
 ]
 
 
@@ -100,7 +100,6 @@ def extract_params(py_text: str) -> Dict[str, Any]:
 
     for node in ast.walk(tree):
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            # collect target names
             targets = []
             if isinstance(node, ast.Assign):
                 targets = [t for t in node.targets if isinstance(t, ast.Name)]
@@ -124,7 +123,6 @@ def extract_params(py_text: str) -> Dict[str, Any]:
                     if isinstance(value, dict):
                         cloud_props.update(value)
                     else:
-                        # capture non-dict as-is under a namespaced key
                         cloud_props[key] = value
                     continue
 
@@ -145,10 +143,9 @@ def build_mde_onboard_payload(data: Dict[str, Any]) -> Dict[str, Any]:
         "Location": data.get("azurelocation"),
         "CorrelationId": data.get("correlationId"),
     }
-    # Optional
-    if "cloud" in data and data["cloud"]:
+    if data.get("cloud"):
         payload["Cloud"] = data["cloud"]
-    if "cloud_propagated" in data and isinstance(data["cloud_propagated"], dict):
+    if isinstance(data.get("cloud_propagated"), dict):
         payload["CloudPropagatedParameters"] = data["cloud_propagated"]
     return payload
 
@@ -169,9 +166,9 @@ def main():
     ap.add_argument("input_py", help="Path to generated Python script containing the parameters")
     ap.add_argument("-o", "--out", default="/etc/opt/microsoft/mdatp/mdatp_onboard.json",
                     help="Output JSON file (default: /etc/opt/microsoft/mdatp/mdatp_onboard.json)")
-    ap.add_argument("--allow-missing", action="store_true",
+    ap.add_argument("--allow-missing", dest="allow_missing", action="store_true",
                     help="Do not error on missing required fields; write what we have")
-    ap.add_argument("--print-only", action="store_true",
+    ap.add_argument("--print-only", dest="print_only", action="store_true",
                     help="Print JSON to stdout instead of writing to file")
     args = ap.parse_args()
 
@@ -184,7 +181,7 @@ def main():
 
     extracted = extract_params(src)
 
-    if not args.allow-missing:
+    if not args.allow_missing:
         validate_required(extracted)
 
     payload = build_mde_onboard_payload(extracted)
@@ -194,8 +191,8 @@ def main():
         print(out_json)
         return
 
-    # Ensure directory exists (commonly /etc/opt/microsoft/mdatp)
-    out_dir = os.path.dirname(os.path.abspath(args.out))
+    out_path = os.path.abspath(args.out)
+    out_dir = os.path.dirname(out_path)
     try:
         os.makedirs(out_dir, exist_ok=True)
     except Exception as e:
@@ -203,30 +200,23 @@ def main():
         sys.exit(1)
 
     try:
-        with open(args.out, "w", encoding="utf-8") as f:
+        with open(out_path, "w", encoding="utf-8") as f:
             f.write(out_json + "\n")
     except PermissionError:
-        print(f"ERROR: permission denied writing {args.out}. Try running with sudo.", file=sys.stderr)
+        print(f"ERROR: permission denied writing {out_path}. Try running with sudo.", file=sys.stderr)
         sys.exit(1)
     except Exception as e:
-        print(f"ERROR: unable to write {args.out}: {e}", file=sys.stderr)
+        print(f"ERROR: unable to write {out_path}: {e}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Wrote {args.out}")
+    print(f"Wrote {out_path}")
 
 
 if __name__ == "__main__":
     main()
 
 
-
-
-# 1) Run it against your generated Python params file
 #sudo python make_mdatp_onboard_json.py /path/to/generated_params.py \
- # --out /etc/opt/microsoft/mdatp/mdatp_onboard.json
-
-# 2) Onboard Defender for Endpoint with that JSON
+#  --out /etc/opt/microsoft/mdatp/mdatp_onboard.json
 #sudo mdatp onboarding --file /etc/opt/microsoft/mdatp/mdatp_onboard.json
-
-# 3) Verify
 #mdatp health --details | egrep "orgId|licensed|cloud"

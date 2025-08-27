@@ -1,0 +1,7 @@
+# Which repo file are we actually using?
+ls -l /etc/yum.repos.d | egrep -i 'microsoft|azure|arc' || echo "NO_MS_REPO_FILE"
+# Grab fresh prod.repo (RHEL 9; change 8→ if needed)
+sudo curl -fsSL -o /etc/yum.repos.d/microsoft-prod.repo https://packages.microsoft.com/config/rhel/9/prod.repo
+sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc
+sudo dnf clean all && sudo rm -rf /var/cache/dnf/*
+sudo dnf makecache --refresh
